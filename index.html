@@ -3,23 +3,45 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>YouTube Finder — Modelagens + Idiomas</title>
+  <title>Método Fast de Modelagem</title>
   <style>
-    :root { --red:#cc0000; }
+    :root { --red:#cc0000; --red-dark:#a60000; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
     h1 { font-size: 22px; margin: 0 0 10px; }
-    .hint { color:#555; margin: 6px 0 16px; font-size:13px; }
+
     form { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
     input[type="text"] { flex:1; min-width:260px; padding:10px; border:1px solid #ccc; border-radius:8px; }
     button { padding:10px 14px; border:0; border-radius:8px; background:var(--red); color:#fff; cursor:pointer; }
     button:disabled { background:#999; cursor:default; }
-    .models { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 6px; }
-    .model { padding:8px 12px; border-radius:999px; border:1px solid #ddd; background:#fff; cursor:pointer; font-size:13px; }
-    .model.active { border-color:var(--red); color:#fff; background:var(--red); }
+
+    /* Botões das modelagens: sempre vermelhos com texto branco */
+    .models { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 6px; }
+    .model {
+      background: var(--red);
+      color: #fff;
+      border: 1px solid var(--red-dark);
+      border-radius: 14px;
+      padding: 8px 14px;
+      cursor: pointer;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      line-height: 1.1;
+      gap: 3px;
+      min-width: 190px;
+      text-align: center;
+    }
+    .model .m-title { font-weight: 700; }
+    .model .m-sub { font-size: 12px; opacity: 0.95; }
+    /* Selecionado: destaque preto ao redor */
+    .model.active { box-shadow: 0 0 0 3px #000; }
+
     details { margin:8px 0 12px; }
     summary { cursor:pointer; font-weight:600; }
     .langs { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:6px 14px; margin-top:8px; }
     .tools { display:flex; gap:8px; margin:6px 0 12px; flex-wrap:wrap; }
+
     .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:12px; }
     .card { border:1px solid #e5e5e5; border-radius:12px; overflow:hidden; background:#fff; }
     .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; background:#f3f3f3; }
@@ -28,15 +50,14 @@
     .title:hover { text-decoration:underline; }
     .meta { color:#555; font-size:13px; }
     .badge { display:inline-block; background:#f1f1f1; padding:2px 6px; border-radius:999px; margin-right:6px; font-size:12px; }
+
     .loading { margin: 8px 0; }
     .empty { color:#777; margin-top:12px; }
-    .footer { margin-top:20px; font-size:12px; color:#888; }
     .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
   </style>
 </head>
 <body>
-  <h1>🔎 YouTube Finder</h1>
-  <div class="hint">Digite palavras‑chave (separe por vírgulas para combinar várias buscas). Mantém: ≥ 8 min • horizontal • sem #shorts.</div>
+  <h1>Método Fast de Modelagem</h1>
 
   <form id="form">
     <input id="q" type="text" placeholder="Ex: marketing digital, instagram" />
@@ -44,10 +65,22 @@
   </form>
 
   <div class="models" id="models">
-    <button class="model active" data-model="gold">Modelagem Gold</button>
-    <button class="model" data-model="silver">Modelagem Silver</button>
-    <button class="model" data-model="bronze">Modelagem Bronze</button>
-    <button class="model" data-model="recorrentes">Modelagem de Views Recorrentes</button>
+    <button class="model active" data-model="gold" type="button">
+      <span class="m-title">Modelagem Gold</span>
+      <span class="m-sub">🔥🔥🔥</span>
+    </button>
+    <button class="model" data-model="silver" type="button">
+      <span class="m-title">Modelagem Silver</span>
+      <span class="m-sub">🔥🔥</span>
+    </button>
+    <button class="model" data-model="bronze" type="button">
+      <span class="m-title">Modelagem Bronze</span>
+      <span class="m-sub">🔥</span>
+    </button>
+    <button class="model" data-model="recorrentes" type="button">
+      <span class="m-title">Modelagem de Views Recorrentes</span>
+      <span class="m-sub">📈</span>
+    </button>
   </div>
 
   <details id="langBox" open>
@@ -69,13 +102,11 @@
     <button id="loadMore" type="button" style="display:none;">Mostrar mais</button>
   </div>
 
-  <div class="footer">Modelos ajustam: min. views • janela de tempo • máx. inscritos. Outros filtros permanecem.</div>
-
   <script>
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-    // Config dos modelos
+    // Config dos modelos (mantém a lógica — só visual mudou)
     const MODELS = {
       gold:       { label: 'Gold',       minViews: 100_000, days: 30, maxSubs: 50_000 },
       silver:     { label: 'Silver',     minViews: 100_000, days: 90, maxSubs: 50_000 },
@@ -94,8 +125,8 @@
     let state = {
       q: '',
       model: 'gold',
-      pages: 1,          // começa com 1; “Mostrar mais” sobe para 2
-      maxPages: 2,       // por limite do backend (plano free)
+      pages: 1,
+      maxPages: 2,
       langs: DEFAULT_LANGS.map(([code]) => code),
       items: []
     };
@@ -125,17 +156,16 @@
         container.appendChild(wrap);
       });
     }
-
     renderLangs();
 
-    // Seleção de modelo
+    // Seleção de modelo (mantém todos vermelhos; só adiciona contorno preto no ativo)
     $$('#models .model').forEach(btn => {
       btn.addEventListener('click', () => {
         $$('#models .model').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         state.model = btn.dataset.model;
         state.pages = 1; // reset
-        if (state.q) search(); // se já tem busca, atualiza
+        if (state.q) search();
       });
     });
 
@@ -175,7 +205,7 @@
           minDurationSec: String(MIN_DURATION_SEC),
           pages: String(state.pages),
           langs: state.langs.join(','),
-          cb: Date.now().toString() // quebra cache
+          cb: Date.now().toString()
         });
         const url = `/api/search?${params.toString()}`;
         const r = await fetch(url);
@@ -186,7 +216,7 @@
         const data = await r.json();
         const items = data.items || [];
 
-        state.items = items; // re-render total (inclui páginas acumuladas)
+        state.items = items;
         renderResults();
         if (state.pages < state.maxPages) {
           $('#loadMore').style.display = 'inline-block';
@@ -243,7 +273,7 @@
       const q = $('#q').value.trim();
       if (!q) return;
       state.q = q;
-      state.pages = 1; // nova busca
+      state.pages = 1;
       search();
     });
 
