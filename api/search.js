@@ -3,15 +3,32 @@
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
 const MIN_VIEWS = 100_000;
 const MAX_SUBS = 50_000;
+const MIN_DURATION_SEC = 8 * 60; // mínimo de 8 minutos
 
 // Espera X ms (para evitar QPS alto na API)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// “1 mês” simplificado para 30 dias
 const isoOneMonthAgo = () => {
-  // “1 mês” simplificado para 30 dias
   const d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   return d.toISOString();
 };
+
+// Converte ISO 8601 (ex: PT1H2M5S) para segundos
+function parseISODuration(iso) {
+  if (!iso || typeof iso !== 'string') return 0;
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return 0;
+  const h = parseInt(m[1] || '0', 10);
+  const min = parseInt(m[2] || '0', 10);
+  const s = parseInt(m[3] || '0', 10);
+  return h * 3600 + min * 60 + s;
+}
+
+// Pega a melhor thumbnail disponível
+function pickThumb(thumbnails) {
+  return thumbnails?.maxres || thumbnails?.standard || thumbnails?.high || thumbnails?.medium || thumbnails?.default || null;
+}
 
 module.exports = async (req, res) => {
   try {
@@ -69,14 +86,14 @@ module.exports = async (req, res) => {
       return res.json({ items: [] });
     }
 
-    // 2) Busca estatísticas dos vídeos
+    // 2) Busca estatísticas + detalhes (inclui duração) dos vídeos
     const videos = [];
     for (let i = 0; i < videoIds.length; i += 50) {
       const batch = videoIds.slice(i, i + 50);
       const params = new URLSearchParams({
         key: apiKey,
         id: batch.join(','),
-        part: 'statistics,snippet'
+        part: 'statistics,snippet,contentDetails' // duration vem aqui
       });
       const url = `${YT_API_BASE}/videos?${params.toString()}`;
       const r = await fetch(url);
@@ -89,19 +106,34 @@ module.exports = async (req, res) => {
       for (const v of (data.items || [])) {
         const viewCount = Number(v?.statistics?.viewCount || 0);
         const publishedAt = v?.snippet?.publishedAt || null;
+        const title = v?.snippet?.title || '';
+        const titleLower = title.toLowerCase();
         if (!publishedAt) continue;
+
+        // Duração e orientação
+        const durationSec = parseISODuration(v?.contentDetails?.duration);
+        const thumb = pickThumb(v?.snippet?.thumbnails);
+        const isHorizontal = thumb?.width && thumb?.height ? (thumb.width >= thumb.height) : true;
+
         const isRecent = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
-        if (viewCount >= MIN_VIEWS && isRecent) {
+
+        // Aplica todos os critérios
+        if (
+          viewCount >= MIN_VIEWS &&
+          isRecent &&
+          durationSec >= MIN_DURATION_SEC && // mínimo de 8 minutos
+          isHorizontal &&
+          !titleLower.includes('#shorts') // reforço contra Shorts
+        ) {
           videos.push({
             videoId: v.id,
-            title: v.snippet?.title || '',
+            title,
             channelId: v.snippet?.channelId || '',
             channelTitle: v.snippet?.channelTitle || '',
             publishedAt,
             viewCount,
-            thumbnail: v.snippet?.thumbnails?.medium?.url
-              || v.snippet?.thumbnails?.default?.url
-              || null,
+            durationSec,
+            thumbnail: thumb?.url || null,
             url: `https://www.youtube.com/watch?v=${v.id}`
           });
         }
@@ -144,7 +176,7 @@ module.exports = async (req, res) => {
       .filter(v => {
         const stats = channelStats[v.channelId];
         if (!stats) return false;
-        if (stats.subs == null) return false; // inscritos ocultos => exclui para respeitar a regra
+        if (stats.subs == null) return false; // inscritos ocultos => exclui
         return stats.subs <= MAX_SUBS;
       })
       .map(v => ({
