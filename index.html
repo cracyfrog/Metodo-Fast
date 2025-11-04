@@ -120,217 +120,212 @@
   </div>
 
   <script>
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-    // Config dos modelos
-    // Observação:
-    // - "fresh" mantém a lógica anterior de vídeos recentes (min 15k views, 7 dias, canais até 150k).
-    // - "recorrentes" agora busca canais com streak (14 vídeos seguidos >= 15k views em até 30 dias, até 150k subs).
-    // - "subnicho" procura oportunidade de canal que teve pelo menos 1 vídeo >= 500k views nos últimos 60 dias.
-    const MODELS = {
-      subnicho:   { label: 'Oportunidade de Subnicho', type: 'channel_by_hot_video', minViews: 500_000, days: 60, maxSubs: null, /* qualquer quantidade */ },
-      gold:       { label: 'Gold',       type: 'video', minViews: 100_000, days: 30, maxSubs: 50_000 },
-      silver:     { label: 'Silver',     type: 'video', minViews: 100_000, days: 90, maxSubs: 50_000 },
-      bronze:     { label: 'Bronze',     type: 'video', minViews: 100_000, days: 90, maxSubs: 150_000 },
-      fresh:      { label: 'Fresh',      type: 'video', minViews: 15_000, days: 7,  maxSubs: 150_000 },
-      recorrentes:{ label: 'Views Recorrentes', type: 'channel_streak', streakVideos: 14, streakMinViews: 15_000, streakDays: 30, maxSubs: 150_000, minDurationSec: 0 }
-    };
-    const MIN_DURATION_SEC = 8 * 60; // 8 min
-    const DEFAULT_LANGS = [
-      ['en','Inglês'], ['es','Espanhol'], ['fr','Francês'], ['de','Alemão'],
-      ['pt','Português'], ['it','Italiano'], ['ru','Russo'], ['ja','Japonês'],
-      ['ko','Coreano'], ['nl','Holandês'], ['pl','Polonês'], ['el','Grego'],
-      ['ro','Romeno'], ['da','Dinamarquês'], ['no','Norueguês'], ['ga','Irlandês']
-    ];
+  // Config dos modelos (compatível com a API atual)
+  // Observação: "Subnicho" e "Recorrentes" aqui usam o mesmo endpoint de vídeos,
+  // só mudando os filtros. Se quiser a lógica avançada real (streak e canal por hot video),
+  // te mando o /api/search pronto pro backend.
+  const MIN_DURATION_SEC = 8 * 60; // 8 min (padrão)
+  const MODELS = {
+    subnicho:   { label: 'Oportunidade de Subnicho', minViews: 500_000, days: 60, maxSubs: 9_999_999, minDurationSec: 0 },
+    gold:       { label: 'Gold',    minViews: 100_000, days: 30, maxSubs: 50_000,  minDurationSec: MIN_DURATION_SEC },
+    silver:     { label: 'Silver',  minViews: 100_000, days: 90, maxSubs: 50_000,  minDurationSec: MIN_DURATION_SEC },
+    bronze:     { label: 'Bronze',  minViews: 100_000, days: 90, maxSubs: 150_000, minDurationSec: MIN_DURATION_SEC },
+    fresh:      { label: 'Fresh',   minViews: 15_000,  days: 7,  maxSubs: 150_000, minDurationSec: MIN_DURATION_SEC },
+    recorrentes:{ label: 'Views Recorrentes', minViews: 15_000, days: 30, maxSubs: 150_000, minDurationSec: 0 }
+  };
 
-    // Estado
-    let state = {
-      q: '',
-      model: 'gold',
-      pages: 1,
-      maxPages: 2,
-      langs: DEFAULT_LANGS.map(([code]) => code),
-      items: []
-    };
+  const DEFAULT_LANGS = [
+    ['en','Inglês'], ['es','Espanhol'], ['fr','Francês'], ['de','Alemão'],
+    ['pt','Português'], ['it','Italiano'], ['ru','Russo'], ['ja','Japonês'],
+    ['ko','Coreano'], ['nl','Holandês'], ['pl','Polonês'], ['el','Grego'],
+    ['ro','Romeno'], ['da','Dinamarquês'], ['no','Norueguês'], ['ga','Irlandês']
+  ];
 
-    // Renderiza checkboxes de idiomas
-    function renderLangs() {
-      const container = $('#langs');
-      container.innerHTML = '';
-      DEFAULT_LANGS.forEach(([code, label]) => {
-        const id = `lang_${code}`;
-        const wrap = document.createElement('label');
-        wrap.htmlFor = id;
-        wrap.style.display = 'flex';
-        wrap.style.alignItems = 'center';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.id = id;
-        cb.value = code;
-        cb.checked = state.langs.includes(code);
-        cb.addEventListener('change', () => {
-          if (cb.checked) {
-            if (!state.langs.includes(code)) state.langs.push(code);
-          } else {
-            state.langs = state.langs.filter(c => c !== code);
-          }
-        });
-        wrap.appendChild(cb);
-        wrap.appendChild(document.createTextNode(' ' + label));
-        container.appendChild(wrap);
-      });
-    }
-    renderLangs();
+  // Estado
+  let state = {
+    q: '',
+    model: 'gold',
+    pages: 1,
+    maxPages: 2,
+    langs: DEFAULT_LANGS.map(([code]) => code),
+    items: []
+  };
 
-    // Seleção de modelo
-    $$('#models .model').forEach(btn => {
-      btn.addEventListener('click', () => {
-        $$('#models .model').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        state.model = btn.dataset.model;
-        state.pages = 1; // reset
-        if (state.q) search();
-      });
-    });
-
-    // Selecionar/Limpar idiomas
-    $('#selectAll').addEventListener('click', () => {
-      state.langs = DEFAULT_LANGS.map(([c]) => c);
-      renderLangs();
-    });
-    $('#clearAll').addEventListener('click', () => {
-      state.langs = [];
-      renderLangs();
-    });
-
-    function formatNumber(n) {
-      return new Intl.NumberFormat('pt-BR').format(n);
-    }
-    function elapsed(publishedAt) {
-      const diff = Date.now() - new Date(publishedAt).getTime();
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      if (days <= 0) return 'hoje';
-      if (days === 1) return 'há 1 dia';
-      return `há ${days} dias`;
-    }
-
-    async function search() {
-      $('#loading').style.display = 'block';
-      $('#empty').style.display = 'none';
-      $('#loadMore').style.display = 'none';
-
-      try {
-        const cfg = MODELS[state.model];
-        const params = new URLSearchParams({
-          q: state.q,
-          days: cfg.days != null ? String(cfg.days) : '',
-          minViews: cfg.minViews != null ? String(cfg.minViews) : '',
-          maxSubs: cfg.maxSubs != null ? String(cfg.maxSubs) : '',
-          minDurationSec: String(cfg.minDurationSec != null ? cfg.minDurationSec : MIN_DURATION_SEC),
-          pages: String(state.pages),
-          langs: state.langs.join(','),
-          type: cfg.type || 'video', // informa o modo (video, channel_by_hot_video, channel_streak)
-          cb: Date.now().toString()
-        });
-
-        // Parâmetros especiais (streak para "Modelagem de Views Recorrentes")
-        if (cfg.type === 'channel_streak') {
-          params.set('streakVideos', String(cfg.streakVideos));
-          params.set('streakMinViews', String(cfg.streakMinViews));
-          params.set('streakDays', String(cfg.streakDays));
-        }
-
-        const url = `/api/search?${params.toString()}`;
-        const r = await fetch(url);
-        if (!r.ok) {
-          const t = await r.text();
-          throw new Error(`Erro na API: ${r.status} ${t}`);
-        }
-        const data = await r.json();
-        const items = data.items || [];
-
-        state.items = items;
-        renderResults();
-        if (state.pages < state.maxPages && items.length) {
-          $('#loadMore').style.display = 'inline-block';
+  // Renderiza checkboxes de idiomas
+  function renderLangs() {
+    const container = $('#langs');
+    if (!container) return;
+    container.innerHTML = '';
+    DEFAULT_LANGS.forEach(([code, label]) => {
+      const id = `lang_${code}`;
+      const wrap = document.createElement('label');
+      wrap.htmlFor = id;
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'center';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = id;
+      cb.value = code;
+      cb.checked = state.langs.includes(code);
+      cb.addEventListener('change', () => {
+        if (cb.checked) {
+          if (!state.langs.includes(code)) state.langs.push(code);
         } else {
-          $('#loadMore').style.display = 'none';
+          state.langs = state.langs.filter(c => c !== code);
         }
-      } catch (e) {
-        console.error(e);
-        alert('Falha ao buscar resultados. Veja o console para detalhes.');
-      } finally {
-        $('#loading').style.display = 'none';
-      }
-    }
-
-    function renderResults() {
-      const container = $('#results');
-      container.innerHTML = '';
-      $('#count').textContent = state.items.length ? `${state.items.length} resultados` : '';
-
-      if (!state.items.length) {
-        $('#empty').style.display = 'block';
-        return;
-      }
-
-      const frag = document.createDocumentFragment();
-      state.items.forEach(v => {
-        const link = v.url || v.videoUrl || v.channelUrl || '#';
-        const title = v.title || v.channelTitle || 'Resultado';
-        const thumb = v.thumbnail || v.channelThumbnail || '';
-
-        const badges = [];
-        if (typeof v.viewCount === 'number') badges.push(`👀 ${formatNumber(v.viewCount)}`);
-        if (typeof v.subscriberCount === 'number') badges.push(`👤 ${formatNumber(v.subscriberCount)} subs`);
-        if (v.publishedAt) badges.push(`🗓️ ${elapsed(v.publishedAt)}`);
-        if (typeof v.durationSec === 'number') badges.push(`⏱️ ${Math.round(v.durationSec/60)} min`);
-        if (v.language) badges.push(`🌐 ${v.language}`);
-        if (v.streakCount || v.streakVideos) {
-          const sc = v.streakCount || v.streakVideos;
-          badges.push(`📈 ${sc} vídeos seguidos`);
-        }
-
-        const channelLine = v.channelTitle ? `<div style="margin-top:6px;">Canal: ${v.channelTitle}</div>` : '';
-
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `
-          <a href="${link}" target="_blank" rel="noopener noreferrer">
-            <img class="thumb" src="${thumb}" alt="thumb" loading="lazy" />
-          </a>
-          <div class="content">
-            <a class="title" href="${link}" target="_blank" rel="noopener noreferrer">${title}</a>
-            <div class="meta">
-              ${badges.map(b => `<span class="badge">${b}</span>`).join(' ')}
-              ${channelLine}
-            </div>
-          </div>
-        `;
-        frag.appendChild(card);
       });
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode(' ' + label));
+      container.appendChild(wrap);
+    });
+  }
+  renderLangs();
 
-      container.appendChild(frag);
+  // Seleção de modelo
+  $$('#models .model').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('#models .model').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.model = btn.dataset.model;
+      state.pages = 1; // reset
+      if (state.q) search();
+    });
+  });
+
+  // Selecionar/Limpar idiomas
+  $('#selectAll')?.addEventListener('click', () => {
+    state.langs = DEFAULT_LANGS.map(([c]) => c);
+    renderLangs();
+  });
+  $('#clearAll')?.addEventListener('click', () => {
+    state.langs = [];
+    renderLangs();
+  });
+
+  function formatNumber(n) {
+    return new Intl.NumberFormat('pt-BR').format(n);
+  }
+  function elapsed(publishedAt) {
+    const diff = Date.now() - new Date(publishedAt).getTime();
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    if (days <= 0) return 'hoje';
+    if (days === 1) return 'há 1 dia';
+    return `há ${days} dias`;
+  }
+
+  function buildParams(cfg) {
+    const params = new URLSearchParams();
+    const set = (k, v) => {
+      if (v === undefined || v === null || v === '') return;
+      params.set(k, String(v));
+    };
+    set('q', state.q);
+    set('pages', state.pages);
+    set('langs', state.langs.join(','));
+    set('cb', Date.now());
+    // Só envia números válidos, sem strings vazias
+    set('minViews', cfg.minViews);
+    set('days', cfg.days);
+    set('maxSubs', cfg.maxSubs);
+    set('minDurationSec', cfg.minDurationSec ?? MIN_DURATION_SEC);
+    return params;
+  }
+
+  async function search() {
+    $('#loading').style.display = 'block';
+    $('#empty').style.display = 'none';
+    $('#loadMore').style.display = 'none';
+
+    try {
+      const cfg = MODELS[state.model];
+      const params = buildParams(cfg);
+      const url = `/api/search?${params.toString()}`;
+      const r = await fetch(url);
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`API retornou ${r.status}. ${t || ''}`.trim());
+      }
+      const data = await r.json();
+      const items = data.items || [];
+
+      state.items = items;
+      renderResults();
+      if (state.pages < state.maxPages && items.length) {
+        $('#loadMore').style.display = 'inline-block';
+      } else {
+        $('#loadMore').style.display = 'none';
+      }
+    } catch (e) {
+      console.error('[search] erro:', e);
+      alert(`Falha ao buscar resultados. ${e?.message || 'Veja o console para detalhes.'}`);
+    } finally {
+      $('#loading').style.display = 'none';
+    }
+  }
+
+  function renderResults() {
+    const container = $('#results');
+    container.innerHTML = '';
+    $('#count').textContent = state.items.length ? `${state.items.length} resultados` : '';
+
+    if (!state.items.length) {
+      $('#empty').style.display = 'block';
+      return;
     }
 
-    // Form submit
-    $('#form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const q = $('#q').value.trim();
-      if (!q) return;
-      state.q = q;
-      state.pages = 1;
-      search();
+    const frag = document.createDocumentFragment();
+    state.items.forEach(v => {
+      const link = v.url || v.videoUrl || v.channelUrl || '#';
+      const title = v.title || v.channelTitle || 'Resultado';
+      const thumb = v.thumbnail || v.channelThumbnail || '';
+
+      const badges = [];
+      if (typeof v.viewCount === 'number') badges.push(`👀 ${formatNumber(v.viewCount)}`);
+      if (typeof v.subscriberCount === 'number') badges.push(`👤 ${formatNumber(v.subscriberCount)} subs`);
+      if (v.publishedAt) badges.push(`🗓️ ${elapsed(v.publishedAt)}`);
+      if (typeof v.durationSec === 'number') badges.push(`⏱️ ${Math.round(v.durationSec/60)} min`);
+      if (v.language) badges.push(`🌐 ${v.language}`);
+
+      const channelLine = v.channelTitle ? `<div style="margin-top:6px;">Canal: ${v.channelTitle}</div>` : '';
+
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <a href="${link}" target="_blank" rel="noopener noreferrer">
+          <img class="thumb" src="${thumb}" alt="thumb" loading="lazy" />
+        </a>
+        <div class="content">
+          <a class="title" href="${link}" target="_blank" rel="noopener noreferrer">${title}</a>
+          <div class="meta">
+            ${badges.map(b => `<span class="badge">${b}</span>`).join(' ')}
+            ${channelLine}
+          </div>
+        </div>
+      `;
+      frag.appendChild(card);
     });
 
-    // Mostrar mais
-    $('#loadMore').addEventListener('click', () => {
-      if (state.pages < state.maxPages) {
-        state.pages += 1;
-        search();
-      }
-    });
-  </script>
-</body>
-</html>
+    container.appendChild(frag);
+  }
+
+  // Form submit
+  $('#form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = $('#q').value.trim();
+    if (!q) return;
+    state.q = q;
+    state.pages = 1;
+    search();
+  });
+
+  // Mostrar mais
+  $('#loadMore').addEventListener('click', () => {
+    if (state.pages < state.maxPages) {
+      state.pages += 1;
+      search();
+    }
+  });
+</script>
