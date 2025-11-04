@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>YouTube Finder (100k views / 1 mês / canais ≤ 50k subs)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    h1 { font-size: 20px; margin-bottom: 8px; }
+    form { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    input[type="text"] { flex: 1; min-width: 260px; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #cc0000; color: #fff; cursor: pointer; }
+    button:disabled { background: #999; cursor: default; }
+    .hint { color: #555; margin-top: -6px; margin-bottom: 16px; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e5e5; border-radius: 12px; overflow: hidden; background: #fff; }
+    .thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #f3f3f3; }
+    .content { padding: 10px; }
+    .title { font-size: 15px; font-weight: 600; margin: 0 0 6px; line-height: 1.3; display: inline-block; color: #111; text-decoration: none; }
+    .title:hover { text-decoration: underline; }
+    .meta { color: #555; font-size: 13px; }
+    .badge { display: inline-block; background: #f1f1f1; padding: 2px 6px; border-radius: 999px; margin-right: 6px; font-size: 12px; }
+    .loading { margin: 12px 0; }
+    .empty { color: #777; margin-top: 12px; }
+    .footer { margin-top: 20px; font-size: 12px; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>🔎 YouTube Finder</h1>
+  <div class="hint">Digite 1+ palavras‑chave (separe por vírgulas para buscar várias, ex: futebol, highlights)</div>
+  <form id="form">
+    <input id="q" type="text" placeholder="Ex: marketing digital, instagram" />
+    <button type="submit">Buscar</button>
+  </form>
+  <div id="loading" class="loading" style="display:none;">Carregando...</div>
+  <div id="results" class="grid"></div>
+  <div id="empty" class="empty" style="display:none;">Nenhum vídeo encontrado com esses critérios.</div>
+
+  <div class="footer">Critérios fixos: ≥ 100k views • postado há ≤ 1 mês • canal com ≤ 50k inscritos.</div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+
+    function formatNumber(n) {
+      return new Intl.NumberFormat('pt-BR').format(n);
+    }
+
+    function elapsed(publishedAt) {
+      const diff = Date.now() - new Date(publishedAt).getTime();
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      if (days <= 0) return 'hoje';
+      if (days === 1) return 'há 1 dia';
+      return `há ${days} dias`;
+    }
+
+    async function search(q) {
+      $('#loading').style.display = 'block';
+      $('#empty').style.display = 'none';
+      $('#results').innerHTML = '';
+
+      try {
+        const url = `/api/search?q=${encodeURIComponent(q)}`;
+        const r = await fetch(url);
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(`Erro na API: ${r.status} ${t}`);
+        }
+        const data = await r.json();
+        const items = data.items || [];
+
+        if (items.length === 0) {
+          $('#empty').style.display = 'block';
+          return;
+        }
+
+        const frag = document.createDocumentFragment();
+        items.forEach(v => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <a href="${v.url}" target="_blank" rel="noopener noreferrer">
+              <img class="thumb" src="${v.thumbnail || ''}" alt="thumb" loading="lazy" />
+            </a>
+            <div class="content">
+              <a class="title" href="${v.url}" target="_blank" rel="noopener noreferrer">${v.title}</a>
+              <div class="meta">
+                <span class="badge">👀 ${formatNumber(v.viewCount)}</span>
+                <span class="badge">👤 ${v.subscriberCount != null ? formatNumber(v.subscriberCount) + ' subs' : 'subs ocultos'}</span>
+                <span class="badge">🗓️ ${elapsed(v.publishedAt)}</span>
+                <div style="margin-top:6px;">Canal: ${v.channelTitle}</div>
+              </div>
+            </div>
+          `;
+          frag.appendChild(card);
+        });
+
+        $('#results').appendChild(frag);
+      } catch (e) {
+        console.error(e);
+        alert('Falha ao buscar vídeos. Veja o console para detalhes.');
+      } finally {
+        $('#loading').style.display = 'none';
+      }
+    }
+
+    $('#form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const q = $('#q').value.trim();
+      if (!q) return;
+      search(q);
+    });
+  </script>
+</body>
+</html>
