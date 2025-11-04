@@ -5,24 +5,22 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Modelagem Channels</title>
   <style>
-    :root { --red:#cc0000; --red-dark:#a60000; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { font-size: 24px; margin: 0 0 4px; display:flex; gap:8px; align-items:center; }
-    .sub { margin: 0 0 14px; color:#444; font-size: 13px; font-weight: 400; }
+    :root { --violet:#8b5cf6; --violet-dark:#6d28d9; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color:#111; }
+    h1 { font-size: 22px; margin: 0 0 6px; display:flex; align-items:center; gap:8px; }
+    .hint { font-size: 14px; color:#444; margin: 4px 0 14px; font-weight: 400; line-height:1.4; }
 
-    form { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+    form { display:flex; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
     input[type="text"] { flex:1; min-width:260px; padding:10px; border:1px solid #ccc; border-radius:8px; }
-    button { padding:10px 14px; border:0; border-radius:8px; background:var(--red); color:#fff; cursor:pointer; }
+    button { padding:10px 14px; border:0; border-radius:8px; background:var(--violet); color:#fff; cursor:pointer; }
     button:disabled { background:#999; cursor:default; }
 
-    .note { margin: 0 0 10px; color:#444; font-size: 13px; font-weight: 400; }
-
-    /* Botões das modelagens: sempre vermelhos com texto branco */
+    /* Botões das modelagens: roxo claro com texto branco, e contorno preto no selecionado */
     .models { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 6px; }
     .model {
-      background: var(--red);
+      background: var(--violet);
       color: #fff;
-      border: 1px solid var(--red-dark);
+      border: 1px solid var(--violet-dark);
       border-radius: 14px;
       padding: 8px 14px;
       cursor: pointer;
@@ -37,7 +35,6 @@
     }
     .model .m-title { font-weight: 700; }
     .model .m-sub { font-size: 12px; opacity: 0.95; }
-    /* Selecionado: destaque preto ao redor */
     .model.active { box-shadow: 0 0 0 3px #000; }
 
     details { margin:8px 0 12px; }
@@ -60,21 +57,25 @@
   </style>
 </head>
 <body>
-  <h1><span>🔮</span><span>Modelagem Channels</span></h1>
-  <p class="sub">Busque por palavras chave do seu nicho, no idioma do canal que você quer criar.</p>
+  <h1>🔮 Modelagem Channels</h1>
+  <p class="hint">Busque por palavras chave do seu nicho, no idioma do canal que você quer criar.</p>
 
   <form id="form">
     <input id="q" type="text" placeholder="Ex: marketing digital, instagram" />
     <button type="submit">Buscar</button>
   </form>
-
-  <p class="note">Os níveis Gold, Silver e Bronze vão te mostrar apenas vídeos quentes, dentro da nossa estratégia de tração rápida, com altas chances de viralização. Pra uma modelagem mais abrangente, pode fazer direto no YouTube, manualmente. Essa ferramenta é pra te mostrar somente o que tem mais potencial viral no momento da busca! Usamos parâmetros variados nos 3 níveis, mas todos focando em resultados rápidos.</p>
+  <p class="hint">
+    Os níveis Gold, Silver e Bronze vão te mostrar apenas vídeos quentes, dentro da nossa estratégia de tração rápida, com altas chances de viralização.
+    Pra uma modelagem mais abrangente, pode fazer direto no Youtube, manualmente. Essa ferramenta é pra te mostrar somente o que tem mais potencial viral no momento da busca!
+    Usamos parâmetros variados nos 3 níveis, mas todos focando em resultados rápidos.
+  </p>
 
   <div class="models" id="models">
     <button class="model" data-model="subnicho" type="button">
       <span class="m-title">Oportunidade de Subnicho</span>
       <span class="m-sub">💎</span>
     </button>
+
     <button class="model active" data-model="gold" type="button">
       <span class="m-title">Modelagem Gold</span>
       <span class="m-sub">🔥🔥🔥</span>
@@ -87,18 +88,20 @@
       <span class="m-title">Modelagem Bronze</span>
       <span class="m-sub">🔥</span>
     </button>
+
     <button class="model" data-model="fresh" type="button">
       <span class="m-title">Fresh</span>
       <span class="m-sub">🔎</span>
     </button>
-    <button class="model" data-model="rec_channels" type="button">
+
+    <button class="model" data-model="recorrentes" type="button">
       <span class="m-title">Modelagem de Views Recorrentes</span>
       <span class="m-sub">📈</span>
     </button>
   </div>
 
   <details id="langBox" open>
-    <summary>Idiomas permitidos (selecione o mesmo idioma das palavras‑chave, pra o filtro funcionar melhor)</summary>
+    <summary>Idiomas permitidos (selecione o mesmo idioma das palavras chave, pra o filtro funcionar melhor)</summary>
     <div class="langs" id="langs"></div>
     <div class="tools">
       <button id="selectAll" type="button">Selecionar todos</button>
@@ -120,16 +123,20 @@
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-    // Config dos modelos (alguns retornam vídeos; outros retornam canais)
+    // Config dos modelos
+    // Observação:
+    // - "fresh" mantém a lógica anterior de vídeos recentes (min 15k views, 7 dias, canais até 150k).
+    // - "recorrentes" agora busca canais com streak (14 vídeos seguidos >= 15k views em até 30 dias, até 150k subs).
+    // - "subnicho" procura oportunidade de canal que teve pelo menos 1 vídeo >= 500k views nos últimos 60 dias.
     const MODELS = {
-      subnicho:   { mode: 'subnicho', minViews: 500_000, days: 60, maxSubs: 0 },         // canais com vídeo 500k+ em 60 dias
-      gold:       { mode: 'videos',   minViews: 100_000, days: 30, maxSubs: 50_000 },
-      silver:     { mode: 'videos',   minViews: 100_000, days: 90, maxSubs: 50_000 },
-      bronze:     { mode: 'videos',   minViews: 100_000, days: 90, maxSubs: 150_000 },
-      fresh:      { mode: 'videos',   minViews: 15_000,  days: 7,  maxSubs: 150_000 },
-      rec_channels:{mode:'rec_channels', minViews: 15_000, days: 30, maxSubs: 150_000 }   // canais com 14 vídeos seguidos 15k+ em 30 dias
+      subnicho:   { label: 'Oportunidade de Subnicho', type: 'channel_by_hot_video', minViews: 500_000, days: 60, maxSubs: null, /* qualquer quantidade */ },
+      gold:       { label: 'Gold',       type: 'video', minViews: 100_000, days: 30, maxSubs: 50_000 },
+      silver:     { label: 'Silver',     type: 'video', minViews: 100_000, days: 90, maxSubs: 50_000 },
+      bronze:     { label: 'Bronze',     type: 'video', minViews: 100_000, days: 90, maxSubs: 150_000 },
+      fresh:      { label: 'Fresh',      type: 'video', minViews: 15_000, days: 7,  maxSubs: 150_000 },
+      recorrentes:{ label: 'Views Recorrentes', type: 'channel_streak', streakVideos: 14, streakMinViews: 15_000, streakDays: 30, maxSubs: 150_000, minDurationSec: 0 }
     };
-    const MIN_DURATION_SEC = 8 * 60; // 8 min para os modelos de vídeos
+    const MIN_DURATION_SEC = 8 * 60; // 8 min
     const DEFAULT_LANGS = [
       ['en','Inglês'], ['es','Espanhol'], ['fr','Francês'], ['de','Alemão'],
       ['pt','Português'], ['it','Italiano'], ['ru','Russo'], ['ja','Japonês'],
@@ -155,6 +162,8 @@
         const id = `lang_${code}`;
         const wrap = document.createElement('label');
         wrap.htmlFor = id;
+        wrap.style.display = 'flex';
+        wrap.style.alignItems = 'center';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.id = id;
@@ -199,7 +208,6 @@
       return new Intl.NumberFormat('pt-BR').format(n);
     }
     function elapsed(publishedAt) {
-      if (!publishedAt) return '';
       const diff = Date.now() - new Date(publishedAt).getTime();
       const days = Math.floor(diff / (1000 * 60 * 60 * 24));
       if (days <= 0) return 'hoje';
@@ -216,17 +224,23 @@
         const cfg = MODELS[state.model];
         const params = new URLSearchParams({
           q: state.q,
-          mode: cfg.mode,
-          minViews: String(cfg.minViews),
-          days: String(cfg.days),
-          maxSubs: String(cfg.maxSubs),
+          days: cfg.days != null ? String(cfg.days) : '',
+          minViews: cfg.minViews != null ? String(cfg.minViews) : '',
+          maxSubs: cfg.maxSubs != null ? String(cfg.maxSubs) : '',
+          minDurationSec: String(cfg.minDurationSec != null ? cfg.minDurationSec : MIN_DURATION_SEC),
           pages: String(state.pages),
           langs: state.langs.join(','),
+          type: cfg.type || 'video', // informa o modo (video, channel_by_hot_video, channel_streak)
           cb: Date.now().toString()
         });
-        if (cfg.mode === 'videos') {
-          params.set('minDurationSec', String(MIN_DURATION_SEC));
+
+        // Parâmetros especiais (streak para "Modelagem de Views Recorrentes")
+        if (cfg.type === 'channel_streak') {
+          params.set('streakVideos', String(cfg.streakVideos));
+          params.set('streakMinViews', String(cfg.streakMinViews));
+          params.set('streakDays', String(cfg.streakDays));
         }
+
         const url = `/api/search?${params.toString()}`;
         const r = await fetch(url);
         if (!r.ok) {
@@ -234,18 +248,18 @@
           throw new Error(`Erro na API: ${r.status} ${t}`);
         }
         const data = await r.json();
-        state.items = data.items || [];
-        renderResults();
+        const items = data.items || [];
 
-        if (state.pages < state.maxPages && cfg.mode === 'videos') {
-          // “Mostrar mais” só faz sentido para busca de vídeos
+        state.items = items;
+        renderResults();
+        if (state.pages < state.maxPages && items.length) {
           $('#loadMore').style.display = 'inline-block';
         } else {
           $('#loadMore').style.display = 'none';
         }
       } catch (e) {
         console.error(e);
-        alert('Falha ao buscar. Veja o console para detalhes.');
+        alert('Falha ao buscar resultados. Veja o console para detalhes.');
       } finally {
         $('#loading').style.display = 'none';
       }
@@ -263,21 +277,34 @@
 
       const frag = document.createDocumentFragment();
       state.items.forEach(v => {
+        const link = v.url || v.videoUrl || v.channelUrl || '#';
+        const title = v.title || v.channelTitle || 'Resultado';
+        const thumb = v.thumbnail || v.channelThumbnail || '';
+
+        const badges = [];
+        if (typeof v.viewCount === 'number') badges.push(`👀 ${formatNumber(v.viewCount)}`);
+        if (typeof v.subscriberCount === 'number') badges.push(`👤 ${formatNumber(v.subscriberCount)} subs`);
+        if (v.publishedAt) badges.push(`🗓️ ${elapsed(v.publishedAt)}`);
+        if (typeof v.durationSec === 'number') badges.push(`⏱️ ${Math.round(v.durationSec/60)} min`);
+        if (v.language) badges.push(`🌐 ${v.language}`);
+        if (v.streakCount || v.streakVideos) {
+          const sc = v.streakCount || v.streakVideos;
+          badges.push(`📈 ${sc} vídeos seguidos`);
+        }
+
+        const channelLine = v.channelTitle ? `<div style="margin-top:6px;">Canal: ${v.channelTitle}</div>` : '';
+
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
-          <a href="${v.url}" target="_blank" rel="noopener noreferrer">
-            <img class="thumb" src="${v.thumbnail || ''}" alt="thumb" loading="lazy" />
+          <a href="${link}" target="_blank" rel="noopener noreferrer">
+            <img class="thumb" src="${thumb}" alt="thumb" loading="lazy" />
           </a>
           <div class="content">
-            <a class="title" href="${v.url}" target="_blank" rel="noopener noreferrer">${v.title || v.channelTitle}</a>
+            <a class="title" href="${link}" target="_blank" rel="noopener noreferrer">${title}</a>
             <div class="meta">
-              ${v.viewCount != null ? `<span class="badge">👀 ${formatNumber(v.viewCount)}</span>` : ''}
-              ${v.subscriberCount != null ? `<span class="badge">👤 ${formatNumber(v.subscriberCount)} subs</span>` : ''}
-              ${v.publishedAt ? `<span class="badge">🗓️ ${elapsed(v.publishedAt)}</span>` : ''}
-              ${v.durationSec ? `<span class="badge">⏱️ ${Math.round(v.durationSec/60)} min</span>` : ''}
-              ${v.language ? `<span class="badge">🌐 ${v.language}</span>` : ''}
-              ${v.channelTitle ? `<div style="margin-top:6px;">Canal: ${v.channelTitle}</div>` : ''}
+              ${badges.map(b => `<span class="badge">${b}</span>`).join(' ')}
+              ${channelLine}
             </div>
           </div>
         `;
@@ -297,7 +324,7 @@
       search();
     });
 
-    // Mostrar mais (só para modelos de vídeos)
+    // Mostrar mais
     $('#loadMore').addEventListener('click', () => {
       if (state.pages < state.maxPages) {
         state.pages += 1;
