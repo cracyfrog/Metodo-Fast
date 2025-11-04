@@ -3,16 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Método Fast de Modelagem</title>
+  <title>Modelagem Channels</title>
   <style>
     :root { --red:#cc0000; --red-dark:#a60000; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    h1 { font-size: 22px; margin: 0 0 10px; }
+    h1 { font-size: 24px; margin: 0 0 4px; display:flex; gap:8px; align-items:center; }
+    .sub { margin: 0 0 14px; color:#444; font-size: 13px; font-weight: 400; }
 
-    form { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    form { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
     input[type="text"] { flex:1; min-width:260px; padding:10px; border:1px solid #ccc; border-radius:8px; }
     button { padding:10px 14px; border:0; border-radius:8px; background:var(--red); color:#fff; cursor:pointer; }
     button:disabled { background:#999; cursor:default; }
+
+    .note { margin: 0 0 10px; color:#444; font-size: 13px; font-weight: 400; }
 
     /* Botões das modelagens: sempre vermelhos com texto branco */
     .models { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 6px; }
@@ -57,14 +60,21 @@
   </style>
 </head>
 <body>
-  <h1>Método Fast de Modelagem</h1>
+  <h1><span>🔮</span><span>Modelagem Channels</span></h1>
+  <p class="sub">Busque por palavras chave do seu nicho, no idioma do canal que você quer criar.</p>
 
   <form id="form">
     <input id="q" type="text" placeholder="Ex: marketing digital, instagram" />
     <button type="submit">Buscar</button>
   </form>
 
+  <p class="note">Os níveis Gold, Silver e Bronze vão te mostrar apenas vídeos quentes, dentro da nossa estratégia de tração rápida, com altas chances de viralização. Pra uma modelagem mais abrangente, pode fazer direto no YouTube, manualmente. Essa ferramenta é pra te mostrar somente o que tem mais potencial viral no momento da busca! Usamos parâmetros variados nos 3 níveis, mas todos focando em resultados rápidos.</p>
+
   <div class="models" id="models">
+    <button class="model" data-model="subnicho" type="button">
+      <span class="m-title">Oportunidade de Subnicho</span>
+      <span class="m-sub">💎</span>
+    </button>
     <button class="model active" data-model="gold" type="button">
       <span class="m-title">Modelagem Gold</span>
       <span class="m-sub">🔥🔥🔥</span>
@@ -77,14 +87,18 @@
       <span class="m-title">Modelagem Bronze</span>
       <span class="m-sub">🔥</span>
     </button>
-    <button class="model" data-model="recorrentes" type="button">
+    <button class="model" data-model="fresh" type="button">
+      <span class="m-title">Fresh</span>
+      <span class="m-sub">🔎</span>
+    </button>
+    <button class="model" data-model="rec_channels" type="button">
       <span class="m-title">Modelagem de Views Recorrentes</span>
       <span class="m-sub">📈</span>
     </button>
   </div>
 
   <details id="langBox" open>
-    <summary>Idiomas permitidos (clique para abrir/fechar)</summary>
+    <summary>Idiomas permitidos (selecione o mesmo idioma das palavras‑chave, pra o filtro funcionar melhor)</summary>
     <div class="langs" id="langs"></div>
     <div class="tools">
       <button id="selectAll" type="button">Selecionar todos</button>
@@ -97,7 +111,7 @@
     <div id="count"></div>
   </div>
   <div id="results" class="grid"></div>
-  <div id="empty" class="empty" style="display:none;">Nenhum vídeo encontrado com esses critérios.</div>
+  <div id="empty" class="empty" style="display:none;">Nenhum resultado encontrado com esses critérios.</div>
   <div style="margin-top:12px;">
     <button id="loadMore" type="button" style="display:none;">Mostrar mais</button>
   </div>
@@ -106,14 +120,16 @@
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-    // Config dos modelos (mantém a lógica — só visual mudou)
+    // Config dos modelos (alguns retornam vídeos; outros retornam canais)
     const MODELS = {
-      gold:       { label: 'Gold',       minViews: 100_000, days: 30, maxSubs: 50_000 },
-      silver:     { label: 'Silver',     minViews: 100_000, days: 90, maxSubs: 50_000 },
-      bronze:     { label: 'Bronze',     minViews: 100_000, days: 90, maxSubs: 150_000 },
-      recorrentes:{ label: 'Views Recorrentes', minViews: 15_000, days: 7, maxSubs: 150_000 }
+      subnicho:   { mode: 'subnicho', minViews: 500_000, days: 60, maxSubs: 0 },         // canais com vídeo 500k+ em 60 dias
+      gold:       { mode: 'videos',   minViews: 100_000, days: 30, maxSubs: 50_000 },
+      silver:     { mode: 'videos',   minViews: 100_000, days: 90, maxSubs: 50_000 },
+      bronze:     { mode: 'videos',   minViews: 100_000, days: 90, maxSubs: 150_000 },
+      fresh:      { mode: 'videos',   minViews: 15_000,  days: 7,  maxSubs: 150_000 },
+      rec_channels:{mode:'rec_channels', minViews: 15_000, days: 30, maxSubs: 150_000 }   // canais com 14 vídeos seguidos 15k+ em 30 dias
     };
-    const MIN_DURATION_SEC = 8 * 60; // 8 min
+    const MIN_DURATION_SEC = 8 * 60; // 8 min para os modelos de vídeos
     const DEFAULT_LANGS = [
       ['en','Inglês'], ['es','Espanhol'], ['fr','Francês'], ['de','Alemão'],
       ['pt','Português'], ['it','Italiano'], ['ru','Russo'], ['ja','Japonês'],
@@ -158,7 +174,7 @@
     }
     renderLangs();
 
-    // Seleção de modelo (mantém todos vermelhos; só adiciona contorno preto no ativo)
+    // Seleção de modelo
     $$('#models .model').forEach(btn => {
       btn.addEventListener('click', () => {
         $$('#models .model').forEach(b => b.classList.remove('active'));
@@ -183,6 +199,7 @@
       return new Intl.NumberFormat('pt-BR').format(n);
     }
     function elapsed(publishedAt) {
+      if (!publishedAt) return '';
       const diff = Date.now() - new Date(publishedAt).getTime();
       const days = Math.floor(diff / (1000 * 60 * 60 * 24));
       if (days <= 0) return 'hoje';
@@ -199,14 +216,17 @@
         const cfg = MODELS[state.model];
         const params = new URLSearchParams({
           q: state.q,
+          mode: cfg.mode,
           minViews: String(cfg.minViews),
           days: String(cfg.days),
           maxSubs: String(cfg.maxSubs),
-          minDurationSec: String(MIN_DURATION_SEC),
           pages: String(state.pages),
           langs: state.langs.join(','),
           cb: Date.now().toString()
         });
+        if (cfg.mode === 'videos') {
+          params.set('minDurationSec', String(MIN_DURATION_SEC));
+        }
         const url = `/api/search?${params.toString()}`;
         const r = await fetch(url);
         if (!r.ok) {
@@ -214,18 +234,18 @@
           throw new Error(`Erro na API: ${r.status} ${t}`);
         }
         const data = await r.json();
-        const items = data.items || [];
-
-        state.items = items;
+        state.items = data.items || [];
         renderResults();
-        if (state.pages < state.maxPages) {
+
+        if (state.pages < state.maxPages && cfg.mode === 'videos') {
+          // “Mostrar mais” só faz sentido para busca de vídeos
           $('#loadMore').style.display = 'inline-block';
         } else {
           $('#loadMore').style.display = 'none';
         }
       } catch (e) {
         console.error(e);
-        alert('Falha ao buscar vídeos. Veja o console para detalhes.');
+        alert('Falha ao buscar. Veja o console para detalhes.');
       } finally {
         $('#loading').style.display = 'none';
       }
@@ -250,14 +270,14 @@
             <img class="thumb" src="${v.thumbnail || ''}" alt="thumb" loading="lazy" />
           </a>
           <div class="content">
-            <a class="title" href="${v.url}" target="_blank" rel="noopener noreferrer">${v.title}</a>
+            <a class="title" href="${v.url}" target="_blank" rel="noopener noreferrer">${v.title || v.channelTitle}</a>
             <div class="meta">
-              <span class="badge">👀 ${formatNumber(v.viewCount)}</span>
-              <span class="badge">👤 ${v.subscriberCount != null ? formatNumber(v.subscriberCount) + ' subs' : 'subs ocultos'}</span>
-              <span class="badge">🗓️ ${elapsed(v.publishedAt)}</span>
-              <span class="badge">⏱️ ${Math.round(v.durationSec/60)} min</span>
+              ${v.viewCount != null ? `<span class="badge">👀 ${formatNumber(v.viewCount)}</span>` : ''}
+              ${v.subscriberCount != null ? `<span class="badge">👤 ${formatNumber(v.subscriberCount)} subs</span>` : ''}
+              ${v.publishedAt ? `<span class="badge">🗓️ ${elapsed(v.publishedAt)}</span>` : ''}
+              ${v.durationSec ? `<span class="badge">⏱️ ${Math.round(v.durationSec/60)} min</span>` : ''}
               ${v.language ? `<span class="badge">🌐 ${v.language}</span>` : ''}
-              <div style="margin-top:6px;">Canal: ${v.channelTitle}</div>
+              ${v.channelTitle ? `<div style="margin-top:6px;">Canal: ${v.channelTitle}</div>` : ''}
             </div>
           </div>
         `;
@@ -277,7 +297,7 @@
       search();
     });
 
-    // Mostrar mais
+    // Mostrar mais (só para modelos de vídeos)
     $('#loadMore').addEventListener('click', () => {
       if (state.pages < state.maxPages) {
         state.pages += 1;
