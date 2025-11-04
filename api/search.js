@@ -1,23 +1,26 @@
 // api/search.js — Vercel Serverless (Node 18+)
+// Suporta modelos: gold, silver, bronze, fresh, recorrentes, subnicho
+// Mantém filtros: duração mínima 8 min, horizontal, sem #shorts, idiomas permitidos
 
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
-// Padrões
+// Parâmetros padrão
 const DEFAULT_MIN_VIEWS = 100_000;
 const DEFAULT_MAX_SUBS = 50_000;
 const DEFAULT_MIN_DURATION_SEC = 8 * 60; // 8 min
 const DEFAULT_DAYS = 30;
-const MAX_PAGES = 2; // por duração/termo (para não estourar timeout)
+const MAX_PAGES = 2; // por duração/termo
+const MIN_ASPECT_RATIO = 1.2; // horizontal
 
-// Durações para modelos de "vídeos"
-const DURATIONS = ['medium', 'long']; // 4–20min e 20+
+// Durações desejadas na busca (evita Shorts já no search)
+const DURATIONS = ['medium', 'long']; // medium=4–20min, long=20+
 
-// Idiomas permitidos por padrão
+// Idiomas padrão (ISO-639-1)
 const DEFAULT_ALLOWED_LANGS = [
   'en','es','fr','de','pt','it','ru','ja','ko','nl','pl','el','ro','da','no','ga'
 ];
 
-// Aproximação país->idioma
+// Aproximação país -> idioma (fallback)
 const COUNTRY_TO_LANG = {
   US:'en', GB:'en', AU:'en', NZ:'en', IE:'en', IN:'en',
   BR:'pt', PT:'pt',
@@ -37,15 +40,12 @@ const COUNTRY_TO_LANG = {
   NO:'no'
 };
 
-// Parâmetros dos modos "de canais"
-const SUBNICHO_DAYS = 60;
-const SUBNICHO_MIN_VIEWS = 500_000;
-
-const STREAK_WINDOW_DAYS = 30;
+// Limites para o modelo "recorrentes" (canais consistentes)
 const STREAK_MIN_VIEWS = 15_000;
-const STREAK_COUNT = 14;
+const STREAK_MIN_COUNT = 14;
+const STREAK_DAYS = 30;
 const STREAK_MAX_SUBS = 150_000;
-const MAX_CHANNEL_CANDIDATES = 25; // avaliar no máximo X canais
+const STREAK_CHANNEL_LIMIT = 20; // quantos canais avaliamos por requisição (para não estourar tempo)
 
 // Sleep simples
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -72,52 +72,193 @@ function pickThumb(thumbnails) {
   return thumbnails?.maxres || thumbnails?.standard || thumbnails?.high || thumbnails?.medium || thumbnails?.default || null;
 }
 
-// IDs de vídeos (opção com duração)
-async function collectVideoIdsWithDurations(terms, apiKey, publishedAfter, pages) {
-  const ids = new Set();
+function aspectRatioOfThumb(thumbnails) {
+  const t = pickThumb(thumbnails);
+  const w = Number(t?.width || 0);
+  const h = Number(t?.height || 0);
+  if (w > 0 && h > 0) return w / h;
+  return 16 / 9;
+}
+
+// Modelos pré-definidos (se ?model= for usado)
+const MODELS = {
+  gold:       { mode: 'normal',     days: 30, minViews: 100_000, maxSubs: 50_000 },
+  silver:     { mode: 'normal',     days: 90, minViews: 100_000, maxSubs: 50_000 },
+  bronze:     { mode: 'normal',     days: 90, minViews: 100_000, maxSubs: 150_000 },
+  fresh:      { mode: 'normal',     days: 7,  minViews: 15_000,  maxSubs: 150_000 },
+  recorrentes:{ mode: 'streak14',   days: STREAK_DAYS, minViews: STREAK_MIN_VIEWS, maxSubs: STREAK_MAX_SUBS },
+  subnicho:   { mode: 'normal',     days: 60, minViews: 500_000, maxSubs: null } // sem limite de inscritos
+};
+
+// Busca IDs e canais por termos/duração/páginas
+async function collectSearchIdsAndChannels({ terms, apiKey, publishedAfter, pages }) {
+  const videoIds = new Set();
+  const channelIds = new Set();
+
   for (const term of terms) {
     for (const duration of DURATIONS) {
       let pageToken = '';
       for (let page = 0; page < pages; page++) {
         const params = new URLSearchParams({
-          key: apiKey, part: 'snippet', q: term, type: 'video',
-          order: 'viewCount', maxResults: '50', publishedAfter, videoDuration: duration
+          key: apiKey,
+          part: 'snippet',
+          q: term,
+          type: 'video',
+          order: 'viewCount',
+          maxResults: '50',
+          publishedAfter,
+          videoDuration: duration
         });
         if (pageToken) params.set('pageToken', pageToken);
-        const r = await fetch(`${YT_API_BASE}/search?${params.toString()}`);
-        if (!r.ok) throw new Error(`search.list ${r.status} ${await r.text()}`);
+
+        const url = `${YT_API_BASE}/search?${params.toString()}`;
+        const r = await fetch(url);
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(`Erro search.list: ${r.status} ${t}`);
+        }
         const data = await r.json();
-        for (const it of (data.items || [])) if (it?.id?.videoId) ids.add(it.id.videoId);
+
+        for (const item of (data.items || [])) {
+          const vid = item?.id?.videoId;
+          const ch = item?.snippet?.channelId;
+          if (vid) videoIds.add(vid);
+          if (ch) channelIds.add(ch);
+        }
+
         pageToken = data.nextPageToken || '';
         if (!pageToken) break;
         await sleep(60);
       }
     }
   }
-  return Array.from(ids);
+
+  return { videoIds: Array.from(videoIds), channelIds: Array.from(channelIds) };
 }
 
-// IDs de vídeos (qualquer duração)
-async function collectVideoIdsAny(terms, apiKey, publishedAfter, pages) {
-  const ids = new Set();
-  for (const term of terms) {
-    let pageToken = '';
-    for (let page = 0; page < pages; page++) {
-      const params = new URLSearchParams({
-        key: apiKey, part: 'snippet', q: term, type: 'video',
-        order: 'viewCount', maxResults: '50', publishedAfter
-      });
-      if (pageToken) params.set('pageToken', pageToken);
-      const r = await fetch(`${YT_API_BASE}/search?${params.toString()}`);
-      if (!r.ok) throw new Error(`search.list ${r.status} ${await r.text()}`);
-      const data = await r.json();
-      for (const it of (data.items || [])) if (it?.id?.videoId) ids.add(it.id.videoId);
-      pageToken = data.nextPageToken || '';
-      if (!pageToken) break;
-      await sleep(60);
+// Detalhes dos vídeos em lotes
+async function fetchVideosDetails(apiKey, ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50);
+    const params = new URLSearchParams({
+      key: apiKey,
+      id: batch.join(','),
+      part: 'statistics,snippet,contentDetails'
+    });
+    const url = `${YT_API_BASE}/videos?${params.toString()}`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Erro videos.list: ${r.status} ${t}`);
+    }
+    const data = await r.json();
+    for (const v of (data.items || [])) out.push(v);
+    await sleep(60);
+  }
+  return out;
+}
+
+// Metadados dos canais (inclui uploads playlist)
+async function fetchChannelsMeta(apiKey, channelIds) {
+  const meta = {};
+  for (let i = 0; i < channelIds.length; i += 50) {
+    const batch = channelIds.slice(i, i + 50);
+    const params = new URLSearchParams({
+      key: apiKey,
+      id: batch.join(','),
+      part: 'statistics,snippet,brandingSettings,contentDetails'
+    });
+    const url = `${YT_API_BASE}/channels?${params.toString()}`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Erro channels.list: ${r.status} ${t}`);
+    }
+    const data = await r.json();
+    for (const ch of (data.items || [])) {
+      const hidden = !!ch?.statistics?.hiddenSubscriberCount;
+      const subs = hidden ? null : Number(ch?.statistics?.subscriberCount || 0);
+      const country = ch?.brandingSettings?.channel?.country || ch?.snippet?.country || null;
+      const uploads = ch?.contentDetails?.relatedPlaylists?.uploads || null;
+      const countryCode = country ? country.toUpperCase() : null;
+      const langHint = countryCode ? COUNTRY_TO_LANG[countryCode] || null : null;
+      meta[ch.id] = { subs, hidden, country: countryCode, langHint, uploads };
+    }
+    await sleep(60);
+  }
+  return meta;
+}
+
+// Lista vídeos de uma playlist (uploads) até publishedAfter ou limite
+async function fetchUploadsWithin(apiKey, uploadsPlaylistId, publishedAfter, maxItems = 60) {
+  const items = [];
+  let pageToken = '';
+  while (items.length < maxItems) {
+    const params = new URLSearchParams({
+      key: apiKey,
+      part: 'contentDetails,snippet',
+      playlistId: uploadsPlaylistId,
+      maxResults: '50'
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const url = `${YT_API_BASE}/playlistItems?${params.toString()}`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Erro playlistItems.list: ${r.status} ${t}`);
+    }
+    const data = await r.json();
+    const list = (data.items || []).map(it => {
+      const vid = it?.contentDetails?.videoId || null;
+      const pub = it?.contentDetails?.videoPublishedAt || it?.snippet?.publishedAt || null;
+      return { videoId: vid, publishedAt: pub };
+    }).filter(x => x.videoId && x.publishedAt);
+
+    // Mantém apenas os dentro da janela
+    for (const x of list) {
+      if (new Date(x.publishedAt).getTime() >= new Date(publishedAfter).getTime()) {
+        items.push(x);
+      }
+    }
+
+    pageToken = data.nextPageToken || '';
+    if (!pageToken) break;
+    // Se o último da página já é antigo, podemos parar
+    const last = list[list.length - 1];
+    if (last && new Date(last.publishedAt).getTime() < new Date(publishedAfter).getTime()) break;
+
+    await sleep(60);
+  }
+  return items.slice(0, maxItems);
+}
+
+// Calcula streak consecutivo a partir do vídeo mais recente
+function computeStreakQualified(videosSortedDesc, { minViews, minDurationSec, publishedAfter }) {
+  let count = 0;
+  for (const v of videosSortedDesc) {
+    const viewCount = Number(v?.statistics?.viewCount || 0);
+    const dur = parseISODuration(v?.contentDetails?.duration);
+    const titleLower = (v?.snippet?.title || '').toLowerCase();
+    const ratio = aspectRatioOfThumb(v?.snippet?.thumbnails);
+    const isRecent = new Date(v?.snippet?.publishedAt || v?.contentDetails?.videoPublishedAt || 0)
+                      .getTime() >= new Date(publishedAfter).getTime();
+
+    const qualifies =
+      isRecent &&
+      viewCount >= minViews &&
+      dur >= minDurationSec &&
+      ratio >= MIN_ASPECT_RATIO &&
+      !titleLower.includes('#shorts');
+
+    if (qualifies) {
+      count += 1;
+    } else {
+      break; // precisa ser seguido
     }
   }
-  return Array.from(ids);
+  return count;
 }
 
 module.exports = async (req, res) => {
@@ -129,364 +270,217 @@ module.exports = async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'YT_API_KEY não configurada.' });
 
     const qRaw = (req.query.q || '').trim();
-    if (!qRaw) return res.status(400).json({ error: 'Use ?q=palavras (ex: q=marketing,instagram)' });
+    if (!qRaw) {
+      return res.status(400).json({ error: 'Use ?q=palavras (ex: q=marketing,instagram)' });
+    }
 
-    const mode = (req.query.mode || 'videos').trim(); // 'videos' | 'subnicho' | 'rec_channels'
+    // Modelo (opcional) ou parâmetros explícitos
+    const modelKey = (req.query.model || '').toLowerCase();
+    const modelCfg = MODELS[modelKey] || null;
 
-    // Parâmetros genéricos
-    const minViews = Math.max(0, parseInt(req.query.minViews || DEFAULT_MIN_VIEWS, 10) || DEFAULT_MIN_VIEWS);
-    const maxSubs = Math.max(0, parseInt(req.query.maxSubs || DEFAULT_MAX_SUBS, 10) || DEFAULT_MAX_SUBS);
+    // Defaults e overrides
     const minDurationSec = Math.max(0, parseInt(req.query.minDurationSec || DEFAULT_MIN_DURATION_SEC, 10) || DEFAULT_MIN_DURATION_SEC);
-    const days = Math.max(1, parseInt(req.query.days || DEFAULT_DAYS, 10) || DEFAULT_DAYS);
+    const days = Math.max(1, parseInt(req.query.days || (modelCfg ? modelCfg.days : DEFAULT_DAYS), 10));
+    const minViews = Math.max(0, parseInt(req.query.minViews || (modelCfg ? modelCfg.minViews : DEFAULT_MIN_VIEWS), 10));
+    // maxSubs: null significa sem limite
+    const maxSubsParam = (req.query.maxSubs ?? (modelCfg ? modelCfg.maxSubs : DEFAULT_MAX_SUBS));
+    const maxSubs = (maxSubsParam === null || maxSubsParam === 'null') ? null : (isNaN(parseInt(maxSubsParam, 10)) ? null : parseInt(maxSubsParam, 10));
     let pages = Math.max(1, parseInt(req.query.pages || '1', 10) || 1);
     pages = Math.min(pages, MAX_PAGES);
 
-    const langsParam = (req.query.langs || '').trim();
-    const allowedLangs = (langsParam
-      ? langsParam.split(',').map(s => normalizeLang(s)).filter(Boolean)
-      : DEFAULT_ALLOWED_LANGS
-    );
+    const allowedLangs = (req.query.langs || '')
+      ? (req.query.langs.split(',').map(s => normalizeLang(s)).filter(Boolean))
+      : DEFAULT_ALLOWED_LANGS;
     const allowedLangsSet = new Set(allowedLangs);
 
-    const terms = qRaw.includes(',')
-      ? qRaw.split(',').map(s => s.trim()).filter(Boolean)
-      : [qRaw];
+    const terms = qRaw.includes(',') ? qRaw.split(',').map(s => s.trim()).filter(Boolean) : [qRaw];
+    const publishedAfter = isoXDaysAgo(days);
 
-    // ---------- MODO: VIDEOS (Gold/Silver/Bronze/Fresh) ----------
-    if (mode === 'videos') {
-      const publishedAfter = isoXDaysAgo(days);
+    // Se for o modelo especial "recorrentes" (streak de 14 vídeos seguidos)
+    if ((modelCfg && modelCfg.mode === 'streak14') || (req.query.mode === 'streak14')) {
+      // 1) Coleta canais candidatos pela busca
+      const { channelIds } = await collectSearchIdsAndChannels({ terms, apiKey, publishedAfter, pages });
 
-      // 1) IDs com duração (evita shorts)
-      let videoIds;
-      try {
-        videoIds = await collectVideoIdsWithDurations(terms, apiKey, publishedAfter, pages);
-      } catch (err) {
-        return res.status(500).json({ error: 'Falha coletando IDs', details: String(err) });
-      }
-      if (videoIds.length === 0) {
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
-      }
-
-      // 2) Detalhes dos vídeos
-      const videos = [];
-      for (let i = 0; i < videoIds.length; i += 50) {
-        const batch = videoIds.slice(i, i + 50);
-        const params = new URLSearchParams({
-          key: apiKey, id: batch.join(','), part: 'statistics,snippet,contentDetails'
-        });
-        const r = await fetch(`${YT_API_BASE}/videos?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro videos.list', details: await r.text() });
-        const data = await r.json();
-
-        for (const v of (data.items || [])) {
-          const viewCount = Number(v?.statistics?.viewCount || 0);
-          const publishedAt = v?.snippet?.publishedAt || null;
-          if (!publishedAt) continue;
-
-          const durationSec = parseISODuration(v?.contentDetails?.duration);
-          const title = v?.snippet?.title || '';
-          const thumb = pickThumb(v?.snippet?.thumbnails);
-          const w = Number(thumb?.width || 0);
-          const h = Number(thumb?.height || 0);
-          const ratio = w > 0 && h > 0 ? w / h : 16/9;
-          const isHorizontal = ratio >= 1.2;
-          const isRecent = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
-          const titleLower = title.toLowerCase();
-
-          if (
-            viewCount >= minViews &&
-            isRecent &&
-            durationSec >= minDurationSec &&
-            isHorizontal &&
-            !titleLower.includes('#shorts')
-          ) {
-            const langTag = v?.snippet?.defaultAudioLanguage || v?.snippet?.defaultLanguage || null;
-            const videoLang = normalizeLang(langTag);
-
-            videos.push({
-              type: 'video',
-              videoId: v.id,
-              title,
-              channelId: v.snippet?.channelId || '',
-              channelTitle: v.snippet?.channelTitle || '',
-              publishedAt,
-              viewCount,
-              durationSec,
-              aspectRatio: ratio,
-              videoLang,
-              thumbnail: thumb?.url || null,
-              url: `https://www.youtube.com/watch?v=${v.id}`
-            });
-          }
-        }
-        await sleep(60);
-      }
-      if (!videos.length) {
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
-      }
-
-      // 3) Estatísticas e país dos canais
-      const channelIds = Array.from(new Set(videos.map(v => v.channelId))).filter(Boolean);
-      const channelMeta = {};
-      for (let i = 0; i < channelIds.length; i += 50) {
-        const batch = channelIds.slice(i, i + 50);
-        const params = new URLSearchParams({
-          key: apiKey, id: batch.join(','), part: 'statistics,snippet,brandingSettings'
-        });
-        const r = await fetch(`${YT_API_BASE}/channels?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro channels.list', details: await r.text() });
-        const data = await r.json();
-        for (const ch of (data.items || [])) {
-          const hidden = !!ch?.statistics?.hiddenSubscriberCount;
-          const subs = hidden ? null : Number(ch?.statistics?.subscriberCount || 0);
-          const country = ch?.brandingSettings?.channel?.country || ch?.snippet?.country || null;
-          const countryCode = country ? country.toUpperCase() : null;
-          const langHint = countryCode ? COUNTRY_TO_LANG[countryCode] || null : null;
-          channelMeta[ch.id] = { subs, hidden, country: countryCode, langHint };
-        }
-        await sleep(60);
-      }
-
-      // 4) Filtro por inscritos/idioma
-      const filtered = videos
-        .filter(v => {
-          const ch = channelMeta[v.channelId];
-          if (!ch) return false;
-          if (maxSubs > 0) { // 0 significa "ignorar limite"
-            if (ch.subs == null) return false;
-            if (ch.subs > maxSubs) return false;
-          }
-          const lang = v.videoLang || ch.langHint || null;
-          if (!lang) return false;
-          return allowedLangsSet.has(lang);
-        })
-        .map(v => ({
-          ...v,
-          subscriberCount: channelMeta[v.channelId]?.subs ?? null,
-          language: v.videoLang || channelMeta[v.channelId]?.langHint || null
-        }))
-        .sort((a, b) => b.viewCount - a.viewCount);
-
-      res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
-      return res.json({ items: filtered, meta: { total: filtered.length } });
-    }
-
-    // ---------- MODO: OPORTUNIDADE DE SUBNICHO (CANAIS) ----------
-    if (mode === 'subnicho') {
-      const publishedAfter = isoXDaysAgo(SUBNICHO_DAYS);
-
-      // 1) Vídeos com grande hit (500k+) para achar canais
-      let videoIds;
-      try {
-        videoIds = await collectVideoIdsAny(terms, apiKey, publishedAfter, pages);
-      } catch (err) {
-        return res.status(500).json({ error: 'Falha coletando IDs', details: String(err) });
-      }
-      if (!videoIds.length) {
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
-      }
-
-      // 2) Detalhes dos vídeos e coleta de canais que bateram 500k+
-      const candidateByChannel = new Map(); // channelId -> best video (maior view)
-      for (let i = 0; i < videoIds.length; i += 50) {
-        const batch = videoIds.slice(i, i + 50);
-        const params = new URLSearchParams({ key: apiKey, id: batch.join(','), part: 'statistics,snippet' });
-        const r = await fetch(`${YT_API_BASE}/videos?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro videos.list', details: await r.text() });
-        const data = await r.json();
-
-        for (const v of (data.items || [])) {
-          const vc = Number(v?.statistics?.viewCount || 0);
-          const publishedAt = v?.snippet?.publishedAt || null;
-          if (!publishedAt) continue;
-          const isRecent = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
-          if (vc >= SUBNICHO_MIN_VIEWS && isRecent) {
-            const chId = v?.snippet?.channelId;
-            const prev = candidateByChannel.get(chId);
-            if (!prev || vc > prev.viewCount) {
-              candidateByChannel.set(chId, {
-                videoId: v.id,
-                viewCount: vc,
-                publishedAt,
-                title: v?.snippet?.title || ''
-              });
-            }
-          }
-        }
-        await sleep(60);
-      }
-
-      const channelIds = Array.from(candidateByChannel.keys());
       if (!channelIds.length) {
         res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
+        return res.json({ items: [], meta: { total: 0, mode: 'streak14' } });
       }
 
-      // 3) Info dos canais e filtro de idioma
-      const items = [];
-      for (let i = 0; i < channelIds.length; i += 50) {
-        const batch = channelIds.slice(i, i + 50);
-        const params = new URLSearchParams({
-          key: apiKey, id: batch.join(','), part: 'statistics,snippet,brandingSettings'
+      // 2) Metadados dos canais (subs, uploads, país)
+      const channelMetaAll = await fetchChannelsMeta(apiKey, channelIds);
+
+      // 3) Filtra por inscritos ≤ 150k e idioma (quando possível)
+      const eligibleChannels = channelIds
+        .filter(id => {
+          const ch = channelMetaAll[id];
+          if (!ch) return false;
+          if (ch.subs == null) return false; // precisa saber para aplicar ≤150k
+          if (ch.subs > STREAK_MAX_SUBS) return false;
+          // idioma: só pelo país aqui; será validado nos vídeos também
+          return true;
+        })
+        .slice(0, STREAK_CHANNEL_LIMIT); // limitamos a quantidade avaliada por request
+
+      if (!eligibleChannels.length) {
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
+        return res.json({ items: [], meta: { total: 0, mode: 'streak14' } });
+      }
+
+      // 4) Para cada canal, pega vídeos do uploads dentro da janela
+      const perChannelVideosIds = new Map();
+      for (const chId of eligibleChannels) {
+        const upl = channelMetaAll[chId]?.uploads || null;
+        if (!upl) continue;
+        const vids = await fetchUploadsWithin(apiKey, upl, isoXDaysAgo(STREAK_DAYS), 60);
+        if (vids.length) perChannelVideosIds.set(chId, vids.map(v => v.videoId));
+        await sleep(50);
+      }
+
+      const allIds = Array.from(new Set([].concat(...Array.from(perChannelVideosIds.values()))));
+      if (!allIds.length) {
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
+        return res.json({ items: [], meta: { total: 0, mode: 'streak14' } });
+      }
+
+      // 5) Detalhes de todos os vídeos coletados
+      const details = await fetchVideosDetails(apiKey, allIds);
+      const detailsById = new Map(details.map(v => [v.id, v]));
+
+      // 6) Avalia streak por canal
+      const results = [];
+      for (const chId of eligibleChannels) {
+        const meta = channelMetaAll[chId];
+        const ids = perChannelVideosIds.get(chId) || [];
+        if (!ids.length) continue;
+
+        // Monta lista de vídeos com detalhes e filtra janela
+        const vids = ids
+          .map(id => detailsById.get(id))
+          .filter(Boolean)
+          .filter(v => new Date(v?.snippet?.publishedAt || 0).getTime() >= new Date(isoXDaysAgo(STREAK_DAYS)).getTime())
+          // ordena do mais recente para o mais antigo
+          .sort((a,b) => new Date(b.snippet.publishedAt).getTime() - new Date(a.snippet.publishedAt).getTime());
+
+        // Filtra por idioma (vídeo ou país do canal)
+        const langTag = vids[0]?.snippet?.defaultAudioLanguage || vids[0]?.snippet?.defaultLanguage || null;
+        const videoLang = normalizeLang(langTag) || meta.langHint || null;
+        if (!videoLang || !allowedLangsSet.has(videoLang)) continue;
+
+        // Streak consecutivo a partir do mais recente
+        const streak = computeStreakQualified(vids, {
+          minViews: STREAK_MIN_VIEWS,
+          minDurationSec: minDurationSec,
+          publishedAfter: isoXDaysAgo(STREAK_DAYS)
         });
-        const r = await fetch(`${YT_API_BASE}/channels?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro channels.list', details: await r.text() });
-        const data = await r.json();
 
-        for (const ch of (data.items || [])) {
-          const country = ch?.brandingSettings?.channel?.country || ch?.snippet?.country || null;
-          const countryCode = country ? country.toUpperCase() : null;
-          const langHint = countryCode ? COUNTRY_TO_LANG[countryCode] || null : null;
-          const lang = langHint || null;
-          if (!lang || !allowedLangsSet.has(lang)) continue;
+        if (streak >= STREAK_MIN_COUNT) {
+          // Pega o vídeo mais recente qualificado para exibir no card
+          const representative = vids.find(v => {
+            const vc = Number(v?.statistics?.viewCount || 0);
+            const dur = parseISODuration(v?.contentDetails?.duration);
+            const titleLower = (v?.snippet?.title || '').toLowerCase();
+            const ratio = aspectRatioOfThumb(v?.snippet?.thumbnails);
+            const isRecent = new Date(v?.snippet?.publishedAt || 0).getTime() >= new Date(isoXDaysAgo(STREAK_DAYS)).getTime();
+            return vc >= STREAK_MIN_VIEWS && dur >= minDurationSec && ratio >= MIN_ASPECT_RATIO && !titleLower.includes('#shorts') && isRecent;
+          }) || vids[0];
 
-          const best = candidateByChannel.get(ch.id);
-          const subsHidden = !!ch?.statistics?.hiddenSubscriberCount;
-          const subs = subsHidden ? null : Number(ch?.statistics?.subscriberCount || 0);
-          const thumb = pickThumb(ch?.snippet?.thumbnails);
-
-          items.push({
-            type: 'channel',
-            channelId: ch.id,
-            channelTitle: ch?.snippet?.title || '',
-            subscriberCount: subs,
-            language: lang,
+          const thumb = pickThumb(representative?.snippet?.thumbnails);
+          results.push({
+            model: 'recorrentes',
+            videoId: representative.id,
+            title: representative.snippet?.title || '',
+            channelId: chId,
+            channelTitle: representative.snippet?.channelTitle || '',
+            publishedAt: representative.snippet?.publishedAt || '',
+            viewCount: Number(representative.statistics?.viewCount || 0),
+            durationSec: parseISODuration(representative.contentDetails?.duration),
+            aspectRatio: aspectRatioOfThumb(representative.snippet?.thumbnails),
             thumbnail: thumb?.url || null,
-            title: ch?.snippet?.title || '',
-            viewCount: best?.viewCount ?? null,
-            publishedAt: best?.publishedAt ?? null,
-            url: `https://www.youtube.com/channel/${ch.id}`
+            url: `https://www.youtube.com/watch?v=${representative.id}`,
+            subscriberCount: meta.subs ?? null,
+            language: videoLang,
+            streakCount: streak
           });
         }
-        await sleep(60);
       }
 
-      const sorted = items.sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
-      res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=86400');
-      return res.json({ items: sorted, meta: { total: sorted.length } });
+      results.sort((a,b) => b.viewCount - a.viewCount);
+      res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+      return res.json({ items: results, meta: { total: results.length, mode: 'streak14' } });
     }
 
-    // ---------- MODO: MODELAGEM DE VIEWS RECORRENTES (CANAIS) ----------
-    if (mode === 'rec_channels') {
-      const publishedAfter = isoXDaysAgo(STREAK_WINDOW_DAYS);
+    // Modo "normal" (gold, silver, bronze, fresh, subnicho, ou parâmetros manuais)
+    const { videoIds, channelIds } = await collectSearchIdsAndChannels({ terms, apiKey, publishedAfter, pages });
+    if (!videoIds.length) {
+      res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
+      return res.json({ items: [], meta: { total: 0, mode: 'normal' } });
+    }
 
-      // 1) Achar canais candidatos via vídeos recentes (min 15k em 30 dias)
-      let videoIds;
-      try {
-        videoIds = await collectVideoIdsAny(terms, apiKey, publishedAfter, 1); // só 1 página para não estourar
-      } catch (err) {
-        return res.status(500).json({ error: 'Falha coletando IDs', details: String(err) });
+    // Detalhes dos vídeos
+    const videos = await fetchVideosDetails(apiKey, videoIds);
+
+    // Metadados dos canais
+    const channelMeta = await fetchChannelsMeta(apiKey, channelIds);
+
+    // Filtro principal
+    const filtered = [];
+    for (const v of videos) {
+      const viewCount = Number(v?.statistics?.viewCount || 0);
+      const publishedAt = v?.snippet?.publishedAt || null;
+      if (!publishedAt) continue;
+
+      // janela temporal
+      const isRecent = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
+      if (!isRecent) continue;
+
+      // duração, orientação e shorts
+      const durationSec = parseISODuration(v?.contentDetails?.duration);
+      const ratio = aspectRatioOfThumb(v?.snippet?.thumbnails);
+      const titleLower = (v?.snippet?.title || '').toLowerCase();
+      if (durationSec < minDurationSec) continue;
+      if (ratio < MIN_ASPECT_RATIO) continue;
+      if (titleLower.includes('#shorts')) continue;
+
+      // views
+      if (viewCount < minViews) continue;
+
+      // idioma
+      const langTag = v?.snippet?.defaultAudioLanguage || v?.snippet?.defaultLanguage || null;
+      const videoLang = normalizeLang(langTag);
+      const ch = channelMeta[v?.snippet?.channelId || ''] || {};
+      const lang = videoLang || ch.langHint || null;
+      if (!lang || !allowedLangsSet.has(lang)) continue;
+
+      // inscritos (se aplicável)
+      if (maxSubs !== null) {
+        if (ch.subs == null) continue; // precisamos saber pra aplicar o limite
+        if (ch.subs > maxSubs) continue;
       }
-      if (!videoIds.length) {
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
-      }
+      // Se maxSubs é null (ex.: subnicho), não filtra por inscritos (aceita inclusive ocultos)
 
-      // 2) Pega vídeos e canais candidatos
-      const channelSet = new Set();
-      for (let i = 0; i < videoIds.length; i += 50) {
-        const batch = videoIds.slice(i, i + 50);
-        const params = new URLSearchParams({ key: apiKey, id: batch.join(','), part: 'statistics,snippet' });
-        const r = await fetch(`${YT_API_BASE}/videos?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro videos.list', details: await r.text() });
-        const data = await r.json();
-        for (const v of (data.items || [])) {
-          const vc = Number(v?.statistics?.viewCount || 0);
-          const publishedAt = v?.snippet?.publishedAt || null;
-          if (!publishedAt) continue;
-          const isRecent = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
-          if (vc >= STREAK_MIN_VIEWS && isRecent) {
-            if (v?.snippet?.channelId) channelSet.add(v.snippet.channelId);
-          }
-        }
-        await sleep(60);
-      }
+      const thumb = pickThumb(v?.snippet?.thumbnails);
+      filtered.push({
+        model: modelKey || 'custom',
+        videoId: v.id,
+        title: v.snippet?.title || '',
+        channelId: v.snippet?.channelId || '',
+        channelTitle: v.snippet?.channelTitle || '',
+        publishedAt,
+        viewCount,
+        durationSec,
+        aspectRatio: ratio,
+        thumbnail: thumb?.url || null,
+        url: `https://www.youtube.com/watch?v=${v.id}`,
+        subscriberCount: ch.subs ?? null,
+        language: lang
+      });
+    }
 
-      const candidateChannels = Array.from(channelSet).slice(0, MAX_CHANNEL_CANDIDATES);
-      if (!candidateChannels.length) {
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=3600');
-        return res.json({ items: [], meta: { total: 0 } });
-      }
-
-      // 3) Para cada canal: checar se últimos 14 uploads (em 30 dias) têm 15k+ views
-      const qualified = [];
-      for (let i = 0; i < candidateChannels.length; i += 50) {
-        const batch = candidateChannels.slice(i, i + 50);
-        const params = new URLSearchParams({
-          key: apiKey, id: batch.join(','), part: 'statistics,snippet,brandingSettings,contentDetails'
-        });
-        const r = await fetch(`${YT_API_BASE}/channels?${params.toString()}`);
-        if (!r.ok) return res.status(r.status).json({ error: 'Erro channels.list', details: await r.text() });
-        const data = await r.json();
-
-        for (const ch of (data.items || [])) {
-          const subsHidden = !!ch?.statistics?.hiddenSubscriberCount;
-          const subs = subsHidden ? null : Number(ch?.statistics?.subscriberCount || 0);
-          if (subs == null || subs > STREAK_MAX_SUBS) continue;
-
-          const country = ch?.brandingSettings?.channel?.country || ch?.snippet?.country || null;
-          const lang = country ? (COUNTRY_TO_LANG[country.toUpperCase()] || null) : null;
-          if (!lang || !allowedLangsSet.has(lang)) continue;
-
-          const uploadsId = ch?.contentDetails?.relatedPlaylists?.uploads;
-          if (!uploadsId) continue;
-
-          // Playlist dos uploads
-          const videoIdsForCheck = [];
-          let pageToken = '';
-          do {
-            const p = new URLSearchParams({
-              key: apiKey, part: 'contentDetails,snippet', playlistId: uploadsId, maxResults: '50'
-            });
-            if (pageToken) p.set('pageToken', pageToken);
-            const pr = await fetch(`${YT_API_BASE}/playlistItems?${p.toString()}`);
-            if (!pr.ok) return res.status(pr.status).json({ error: 'Erro playlistItems.list', details: await pr.text() });
-            const pdata = await pr.json();
-
-            for (const it of (pdata.items || [])) {
-              const vId = it?.contentDetails?.videoId;
-              const publishedAt = it?.contentDetails?.videoPublishedAt || it?.snippet?.publishedAt || null;
-              if (!vId || !publishedAt) continue;
-              const withinWindow = new Date(publishedAt).getTime() >= new Date(publishedAfter).getTime();
-              if (withinWindow) videoIdsForCheck.push({ vId, publishedAt });
-            }
-            pageToken = pdata.nextPageToken || '';
-            // Não precisamos de tudo; basta pegar os mais recentes dentro da janela
-            if (videoIdsForCheck.length >= STREAK_COUNT) break;
-            await sleep(60);
-          } while (pageToken);
-
-          // Pegamos os 14 mais recentes dentro da janela
-          videoIdsForCheck.sort((a,b) => new Date(b.publishedAt) - new Date(a.publishedAt));
-          const streak = videoIdsForCheck.slice(0, STREAK_COUNT);
-          if (streak.length < STREAK_COUNT) continue;
-
-          const ids = streak.map(s => s.vId);
-          const vparams = new URLSearchParams({ key: apiKey, id: ids.join(','), part: 'statistics' });
-          const vr = await fetch(`${YT_API_BASE}/videos?${vparams.toString()}`);
-          if (!vr.ok) return res.status(vr.status).json({ error: 'Erro videos.list (streak)', details: await vr.text() });
-          const vdata = await vr.json();
-
-          let allAbove = true;
-          for (const v of (vdata.items || [])) {
-            const vc = Number(v?.statistics?.viewCount || 0);
-            if (vc < STREAK_MIN_VIEWS) { allAbove = false; break; }
-          }
-          if (!allAbove) continue;
-
-          const thumb = pickThumb(ch?.snippet?.thumbnails);
-          qualified.push({
-            type: 'channel',
-            channelId: ch.id,
-            channelTitle: ch?.snippet?.title || '',
-            subscriberCount: subs,
-            language: lang,
-            thumbnail: thumb?.url || null,
-            title: ch?.snippet?.title || '',
-            url: `https://www.youtube.com/channel/${ch.id}`
-          });
-
-          // 
+    filtered.sort((a, b) => b.viewCount - a.viewCount);
+    res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+    return res.json({ items: filtered, meta: { total: filtered.length, mode: 'normal' } });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Erro inesperado no servidor', details: String(err) });
+  }
+};
